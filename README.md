@@ -2,6 +2,22 @@
 
 A standalone internship task-management portal for Vivakti. React + TypeScript frontend, Supabase Auth/Postgres/Storage backend, deployable through GitHub to Cloudflare Pages.
 
+## Try it instantly (no setup)
+```bash
+npm install
+npm run dev
+```
+With no Supabase keys configured, the app opens in **demo mode** with sample interns, tasks, submissions and feedback. You can explore both the admin and intern views; data stays in your browser.
+
+## Roles
+| Role | What they can do |
+|---|---|
+| **Admin** | Everything: create and edit any task, review any submission, invite interns and members, raise and manage **tickets**. Set up manually in SQL. |
+| **Member** | Give tasks to selected interns, review those interns' submissions, and work on tickets assigned to them. Admins can edit or review a member's tasks too. |
+| **Intern** | Receive tasks, submit ZIP work, and work on tickets assigned to them. |
+
+**Tickets** are for building and improving other applications: bugs, improvements, features and build tasks, each tied to an application name. Admins raise a ticket and assign it to chosen members and interns; assignees update the status (open, in progress, resolved) and discuss in a thread; only admins can edit details or close a ticket.
+
 ## Features
 - Separate admin and intern experiences, enforced by PostgreSQL RLS.
 - Invite-only intern onboarding (admin-only Supabase Edge Function).
@@ -10,6 +26,11 @@ A standalone internship task-management portal for Vivakti. React + TypeScript f
 - Admin review, approval and revision feedback.
 - Private Supabase Storage bucket and short-lived signed downloads.
 - Responsive white / black / orange interface.
+- Task detail drawer, search, filters and sorting, overdue / due-soon cues, and progress tracking.
+- Revision loop: interns see feedback, start a revision and resubmit; full activity timeline per task.
+- Invite and password-reset flows (set a password after accepting an invite).
+- Dark mode, Ctrl/Cmd+K quick search, notifications bell, deadline calendar, intern detail pages, CSV export and per-task discussion threads.
+- Built-in demo mode, keyboard-accessible dialogs, toasts and loading skeletons.
 
 ## Stack
 - React, TypeScript, Vite, Tailwind CSS
@@ -37,6 +58,20 @@ where email = 'you@example.com';
 ```
 
 The profile trigger assigns all newly registered/invited users the `intern` role. The admin role must only be granted manually by the project owner in SQL Editor.
+
+### 2b. Run the hardening migration
+Also run `supabase/migrations/0002_hardening.sql`. It enforces allowed status transitions for interns (e.g. an approved task cannot be reopened, and "submitted" requires an uploaded ZIP), lets admins clean up stored files, and adds indexes.
+
+### 2c. Run the comments migration (optional but recommended)
+Run `supabase/migrations/0003_comments.sql` to enable per-task discussion threads between admins and interns. The app keeps working without it; threads simply won't save until it's applied.
+
+### 2d. Members and tickets
+Run `supabase/migrations/0004_members_and_tickets.sql`, then redeploy the invite function (`npx supabase functions deploy create-intern`) so admins can invite members. To turn an existing user into a member:
+```sql
+update public.profiles set role = 'member' where email = 'person@example.com';
+```
+
+In Supabase → Authentication → URL Configuration, set the Site URL and add your Cloudflare Pages domain to Redirect URLs so invite and password-reset links return to the app.
 
 ## 3. Configure intern invitations
 Install Supabase CLI and link the project:

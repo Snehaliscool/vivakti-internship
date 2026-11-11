@@ -1,69 +1,178 @@
-import {useEffect,useState} from "react";
-import type {FormEvent} from "react";
-import {supabase,configured} from "./lib/supabase";
-import {Activity,ArrowDownToLine,ArrowUpRight,BookOpen,Check,CheckCircle2,Clock3,FileArchive,FileText,FolderKanban,LayoutDashboard,Link2,LogOut,Menu,PlayCircle,Plus,Search,ShieldCheck,Users,X,AlertCircle,Settings2} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, Bug, CalendarDays, FileArchive, Moon, Search, Sun, FolderKanban, LayoutDashboard, LogOut, Menu, RefreshCw, ShieldCheck, Sparkles, Users, X } from "lucide-react";
+import { supabase, configured, arrivedViaInvite } from "./lib/supabase";
+import { demoApi, resetDemo, supabaseApi } from "./lib/api";
+import type { Api } from "./lib/api";
+import { DEMO_ADMIN, DEMO_MEMBER, seedDemo } from "./lib/demo";
+import type { Assignment, Data, Profile, Tab, Task, Ticket } from "./lib/types";
+import { REVIEW, OPEN, ROLE_LABEL } from "./lib/utils";
+import { Avatar, Brand, Skeleton, Toasts } from "./components/ui";
+import type { ToastMsg } from "./components/ui";
+import { Login, SetPassword } from "./views/Auth";
+import { Overview } from "./views/Overview";
+import { Tasks } from "./views/Tasks";
+import { Detail } from "./views/Detail";
+import { InternDetail, Interns, Reviews } from "./views/People";
+import { Calendar } from "./views/Calendar";
+import { Palette } from "./components/Palette";
+import { TicketDetail, TicketModal, Tickets } from "./views/Tickets";
+import { Bell } from "./components/Bell";
+import { InternModal, TaskModal } from "./views/Modals";
 
-type Role="admin"|"intern"; type Tab="overview"|"tasks"|"interns"|"submissions";
-type Profile={id:string;full_name:string;email:string;role:Role;created_at:string};
-type Task={id:string;title:string;description:string;task_type:string;resource_url:string|null;priority:string;due_date:string|null;created_at:string};
-type Submission={id:string;assignment_id:string;intern_id:string;storage_path:string;file_name:string;file_size:number;note:string;created_at:string};
-type Assignment={id:string;task_id:string;intern_id:string;status:string;task:Task;intern?:Profile;submissions?:Submission[]};
-const labels:Record<string,string>={assigned:"Assigned",in_progress:"In progress",submitted:"Submitted",under_review:"Under review",revision_requested:"Needs revision",approved:"Approved"};
-const iconFor=(t:string)=>t==="website"?Link2:t==="youtube"?PlayCircle:t==="project"?FolderKanban:FileText;
+const TABS: Tab[] = ["overview", "tasks", "tickets", "calendar", "interns", "submissions"];
+const EMPTY: Data = { tasks: [], assignments: [], interns: [], members: [], tickets: [] };
+type DemoRole = "admin" | "member" | "intern";
+const readDemo = (): DemoRole | null => { try { return sessionStorage.getItem("vivakti-demo-role") as any; } catch { return null; } };
 
-export default function App(){
- const [session,setSession]=useState<any>(null),[profile,setProfile]=useState<Profile|null>(null),[loading,setLoading]=useState(true);
- const [email,setEmail]=useState(""),[password,setPassword]=useState(""),[authError,setAuthError]=useState("");
- const [tab,setTab]=useState<Tab>("overview"),[tasks,setTasks]=useState<Task[]>([]),[assignments,setAssignments]=useState<Assignment[]>([]),[interns,setInterns]=useState<Profile[]>([]),[submissions,setSubmissions]=useState<Submission[]>([]);
- const [search,setSearch]=useState(""),[notice,setNotice]=useState(""),[modal,setModal]=useState<"task"|"intern"|null>(null),[busy,setBusy]=useState(false),[mobile,setMobile]=useState(false);
- useEffect(()=>{if(!configured){setLoading(false);return;}supabase.auth.getSession().then(({data})=>{setSession(data.session);if(!data.session)setLoading(false);});const {data}=supabase.auth.onAuthStateChange((_e,s)=>{setSession(s);if(!s){setProfile(null);setLoading(false);}});return()=>data.subscription.unsubscribe();},[]);
- useEffect(()=>{if(session?.user)loadProfile();},[session]);
- async function loadProfile(){const {data,error}=await supabase.from("profiles").select("*").eq("id",session.user.id).single();if(error){setAuthError("Profile unavailable. Ask the workspace administrator to verify your invitation.");setLoading(false);return;}setProfile(data);await refresh(data.role);setLoading(false);}
- async function refresh(role:Role=profile?.role||"intern"){if(!session?.user)return;
-  if(role==="admin"){const [t,a,i,s]=await Promise.all([supabase.from("tasks").select("*").order("created_at",{ascending:false}),supabase.from("task_assignments").select("*,task:tasks(*),intern:profiles!task_assignments_intern_id_fkey(*),submissions(*)").order("created_at",{ascending:false}),supabase.from("profiles").select("*").eq("role","intern").order("created_at",{ascending:false}),supabase.from("submissions").select("*").order("created_at",{ascending:false})]);setTasks(t.data||[]);setAssignments((a.data||[]) as Assignment[]);setInterns((i.data||[]) as Profile[]);setSubmissions((s.data||[]) as Submission[]);}
-  else{const {data}=await supabase.from("task_assignments").select("*,task:tasks(*),submissions(*)").eq("intern_id",session.user.id).order("created_at",{ascending:false});const rows=(data||[]) as Assignment[];setAssignments(rows);setTasks(rows.map(x=>x.task).filter(Boolean));setSubmissions(rows.flatMap(x=>x.submissions||[]));}
- }
- async function signIn(e:FormEvent){e.preventDefault();setBusy(true);setAuthError("");const {error}=await supabase.auth.signInWithPassword({email,password});if(error)setAuthError(error.message);setBusy(false);}
- async function signOut(){await supabase.auth.signOut();setTab("overview");}
- async function setStatus(id:string,status:string){const {error}=await supabase.from("task_assignments").update({status}).eq("id",id);if(error)setNotice(error.message);else{setNotice("Task status updated.");await refresh();}}
- async function review(id:string,status:"approved"|"revision_requested",message:string){const {error}=await supabase.from("task_assignments").update({status}).eq("id",id);if(error){setNotice(error.message);return;}const {error:f}=await supabase.from("feedback").insert({assignment_id:id,admin_id:session.user.id,message,action:status});setNotice(f?.message|| (status==="approved"?"Submission approved.":"Revision requested."));await refresh();}
- async function download(path:string){const {data,error}=await supabase.storage.from("intern-submissions").createSignedUrl(path,60);if(error)setNotice(error.message);else window.open(data.signedUrl,"_blank","noopener,noreferrer");}
- const admin=profile?.role==="admin";
- const nav=[{id:"overview" as Tab,label:"Overview",icon:LayoutDashboard},{id:"tasks" as Tab,label:"Tasks",icon:FolderKanban},...(admin?[{id:"interns" as Tab,label:"Interns",icon:Users},{id:"submissions" as Tab,label:"Submissions",icon:FileArchive}]:[])];
- if(!configured)return <Setup/>;
- if(loading)return <div className="loading"><div className="spinner"/>Opening workspace…</div>;
- if(!session)return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} error={authError} busy={busy} submit={signIn}/>;
- if(!profile)return <div className="loading"><AlertCircle/>{authError||"Loading profile"}<button className="btn secondary" onClick={signOut}>Sign out</button></div>;
- return <div className="shell">
-  <aside className={`sidebar ${mobile?"open":""}`}><div className="brand"><div className="mark">v.</div><div><b>vivakti</b><small>INTERNSHIP WORKSPACE</small></div><button className="icon mobile-close" onClick={()=>setMobile(false)}><X/></button></div><div className="nav-label">WORKSPACE</div><nav>{nav.map(n=><button key={n.id} className={`nav-item ${tab===n.id?"active":""}`} onClick={()=>{setTab(n.id);setMobile(false);}}><n.icon size={18}/>{n.label}</button>)}</nav><div className="sidebar-bottom"><div className="privacy"><ShieldCheck size={17}/><div><b>Private workspace</b><span>Your work stays within Vivakti.</span></div></div><div className="user"><div className="avatar">{(profile.full_name||profile.email)[0].toUpperCase()}</div><div className="user-copy"><b>{profile.full_name||profile.email}</b><span>{admin?"Administrator":"Intern"}</span></div><button className="icon" onClick={signOut} title="Sign out"><LogOut size={17}/></button></div></div></aside>
-  {mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}
-  <main className="main"><header className="topbar"><button className="icon mobile-menu" onClick={()=>setMobile(true)}><Menu/></button><div className="crumb">Vivakti <span>/</span> <b>{nav.find(n=>n.id===tab)?.label}</b></div><div className="top-right"><span className="role">{admin?"ADMIN":"INTERN"}</span><div className="avatar small">{(profile.full_name||profile.email)[0].toUpperCase()}</div></div></header>
-   <div className="page">{notice&&<div className="notice"><CheckCircle2 size={16}/>{notice}<button onClick={()=>setNotice("")}><X size={15}/></button></div>}
-    {tab==="overview"&&<Overview profile={profile} admin={!!admin} tasks={tasks} assignments={assignments} interns={interns} submissions={submissions} go={setTab} newTask={()=>setModal("task")}/>}
-    {tab==="tasks"&&<Tasks admin={!!admin} tasks={tasks} assignments={assignments} search={search} setSearch={setSearch} newTask={()=>setModal("task")} setStatus={setStatus}/>}
-    {tab==="interns"&&admin&&<Interns interns={interns} assignments={assignments} invite={()=>setModal("intern")}/>}
-    {tab==="submissions"&&admin&&<Reviews assignments={assignments} download={download} review={review}/>}
-   </div>
-  </main>
-  {modal==="task"&&<TaskModal interns={interns} close={()=>setModal(null)} done={async()=>{setModal(null);await refresh();setNotice("Task created and assigned.");}}/>}
-  {modal==="intern"&&<InternModal close={()=>setModal(null)} done={()=>{setModal(null);setNotice("Invitation sent.");}}/>}
- </div>;
+export default function App() {
+  const [session, setSession] = useState<any>(null), [authReady, setAuthReady] = useState(!configured);
+  const [profile, setProfile] = useState<Profile | null>(null), [profileError, setProfileError] = useState("");
+  const [needPassword, setNeedPassword] = useState(arrivedViaInvite);
+  const [demoRole, setDemoRole] = useState<DemoRole | null>(configured ? null : readDemo());
+
+  useEffect(() => {
+    if (!configured) return;
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
+    const { data } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s);
+      if (event === "PASSWORD_RECOVERY") setNeedPassword(true);
+      if (!s) { setProfile(null); setProfileError(""); }
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!configured || !session?.user) return;
+    let live = true;
+    (async () => {
+      setProfileError("");
+      const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+      if (!live) return;
+      if (error || !data) setProfileError("We couldn't find your profile. Ask your administrator to check your invitation.");
+      else setProfile(data as Profile);
+    })();
+    return () => { live = false; };
+  }, [session?.user?.id]);
+
+  const demoUser: Profile | null = useMemo(() => {
+    if (!demoRole) return null;
+    return demoRole === "admin" ? DEMO_ADMIN : demoRole === "member" ? DEMO_MEMBER : seedDemo().interns[0];
+  }, [demoRole]);
+  const me = configured ? profile : demoUser;
+  const api: Api | null = useMemo(() => me ? (configured ? supabaseApi(me) : demoApi(me)) : null, [me?.id, me?.role]);
+
+  async function signOut() {
+    if (configured) await supabase.auth.signOut();
+    else { try { sessionStorage.removeItem("vivakti-demo-role"); } catch { /* ignore */ } setDemoRole(null); }
+  }
+  function enterDemo(role: DemoRole) { try { sessionStorage.setItem("vivakti-demo-role", role); } catch { /* ignore */ } setDemoRole(role); }
+
+  if (!authReady) return <div className="loading"><div className="spinner" />Opening workspace…</div>;
+  if (configured && session && needPassword) return <SetPassword done={() => { setNeedPassword(false); history.replaceState(null, "", window.location.pathname); }} />;
+  if (configured && !session) return <Login />;
+  if (!configured && !demoUser) return <Login onDemo={enterDemo} />;
+  if (configured && !profile) return <div className="loading">{profileError ? <><AlertCircle />{profileError}<button className="btn secondary" onClick={signOut}>Sign out</button></> : <><div className="spinner" />Loading your profile…</>}</div>;
+  return <Workspace me={me!} api={api!} signOut={signOut} demo={!configured} switchDemo={enterDemo} />;
 }
-function Setup(){return <div className="auth-wrap"><div className="auth-card"><Brand/><div className="eyebrow">SETUP REQUIRED</div><h1>Connect your workspace.</h1><p>Add your Supabase URL and anon key to <code>.env.local</code>, then run the SQL migration included in this project.</p><pre>cp .env.example .env.local</pre><p className="muted">Never put your service-role key in frontend environment variables.</p></div></div>}
-function Brand(){return <div className="brand centered"><div className="mark">v.</div><div><b>vivakti</b><small>INTERNSHIP WORKSPACE</small></div></div>}
-function Login({email,setEmail,password,setPassword,error,busy,submit}:any){return <div className="auth-wrap"><div className="auth-card"><Brand/><div className="eyebrow">TEAM ACCESS</div><h1>Welcome back.</h1><p className="muted">Sign in to continue to your internship workspace.</p><form onSubmit={submit} className="form"><label>Email address<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Your password" required/></label>{error&&<div className="error"><AlertCircle size={15}/>{error}</div>}<button className="btn primary full" disabled={busy}>{busy?"Signing in…":"Sign in"}<ArrowUpRight size={16}/></button></form><div className="auth-foot"><ShieldCheck size={15}/> Invite-only access · Supabase Auth</div></div><div className="auth-caption">A better way to learn by doing.</div></div>}
-function Heading({eyebrow,title,subtitle,action}:any){return <div className="heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{subtitle}</p></div>{action}</div>}
-function Stat({icon:Icon,label,value,note}:any){return <div className="stat"><div className="stat-top"><span>{label}</span><Icon size={18}/></div><b>{value}</b><small>{note}</small></div>}
-function Overview({profile,admin,tasks,assignments,interns,submissions,go,newTask}:any){const done=assignments.filter((a:Assignment)=>a.status==="approved").length;const review=assignments.filter((a:Assignment)=>["submitted","under_review"].includes(a.status)).length;return <><Heading eyebrow="YOUR WORKSPACE" title={`Good ${new Date().getHours()<12?"morning":"afternoon"}, ${(profile.full_name||"there").split(" ")[0]}.`} subtitle={admin?"Here's what's happening across your internship programme.":"Your learning queue, deadlines and recent progress."} action={admin&&<button className="btn primary" onClick={newTask}><Plus size={17}/> Create task</button>}/><div className="stats"><Stat icon={FolderKanban} label={admin?"Total tasks":"Assigned to you"} value={admin?tasks.length:assignments.length} note="Across your workspace"/><Stat icon={Activity} label="In progress" value={assignments.filter((a:Assignment)=>a.status==="in_progress").length} note="Currently being worked on"/><Stat icon={CheckCircle2} label="Approved" value={done} note="Successfully completed"/><Stat icon={Clock3} label="Needs review" value={review} note="Requires attention"/></div><div className="columns"><section className="panel"><div className="panel-head"><div><h2>{admin?"Recent assignments":"Your tasks"}</h2><p>{admin?"Latest work assigned to your interns.":"Pick up where you left off."}</p></div><button className="text-btn" onClick={()=>go("tasks")}>View all <ArrowUpRight size={15}/></button></div>{assignments.length?assignments.slice(0,6).map((a:Assignment)=><TaskRow key={a.id} a={a} admin={admin}/>):<Empty icon={FolderKanban} title="Nothing assigned yet" text={admin?"Create a task and assign it to an intern.":"Your admin will add tasks here when they're ready."}/>}</section><section className="panel side-panel"><div className="panel-head"><div><h2>{admin?"Programme snapshot":"Your progress"}</h2><p>{admin?"A quick team overview.":"A look at your activity."}</p></div><Settings2 color="#f47721"/></div>{admin?<><div className="snapshot">{interns.length}<span> active interns</span></div><div className="snapshot">{submissions.length}<span> submissions received</span></div><button className="text-btn" onClick={()=>go("interns")}>Manage interns <ArrowUpRight size={15}/></button></>:<><div className="ring"><b>{assignments.length?Math.round(done/assignments.length*100):0}%</b><span>approved</span></div><p className="center muted">{done} of {assignments.length} assignments approved</p></>}</section></div><div className="tip"><BookOpen size={20}/><div><b>{admin?"Build a culture of clear feedback.":"Make your work visible."}</b><span>{admin?"Specific instructions and timely reviews help interns learn faster.":"Add a short note with each submission to explain what you completed."}</span></div></div></>}
-function Status({status}:any){return <span className={`status s-${status}`}><i/>{labels[status]||status}</span>}
-function TaskRow({a,admin}:any){const t=a.task||{};const Icon=iconFor(t.task_type||"general");return <div className="task-row"><div className="type-icon"><Icon size={18}/></div><div className="task-copy"><b>{t.title||"Untitled task"}</b><span>{admin?(a.intern?.full_name||"Intern"):t.task_type} · {t.due_date?`Due ${new Date(t.due_date).toLocaleDateString()}`:"No deadline"}</span></div><Status status={a.status}/></div>}
-function Empty({icon:Icon,title,text}:any){return <div className="empty"><div><Icon size={21}/></div><b>{title}</b><p>{text}</p></div>}
-function Tasks({admin,tasks,assignments,search,setSearch,newTask,setStatus}:any){const filtered=tasks.filter((t:Task)=>`${t.title} ${t.description}`.toLowerCase().includes(search.toLowerCase()));return <><Heading eyebrow="WORK QUEUE" title="Tasks" subtitle={admin?"Create assignments and keep track of the work in motion.":"Everything assigned to you, in one place."} action={admin&&<button className="btn primary" onClick={newTask}><Plus size={17}/> Create task</button>}/><div className="toolbar"><div className="search"><Search size={17}/><input placeholder="Search tasks…" value={search} onChange={e=>setSearch(e.target.value)}/></div><span>{filtered.length} tasks</span></div><div className="task-grid">{admin?filtered.map((t:Task)=><TaskCard key={t.id} task={t} assignments={assignments.filter((a:Assignment)=>a.task_id===t.id)}/>):assignments.filter((a:Assignment)=>a.task&&`${a.task.title} ${a.task.description}`.toLowerCase().includes(search.toLowerCase())).map((a:Assignment)=><InternTask key={a.id} a={a} setStatus={setStatus}/>)}{filtered.length===0&&<div className="panel"><Empty icon={FolderKanban} title="No tasks found" text="Try another search or create a new task."/></div>}</div></>}
-function TaskCard({task,assignments}:any){const Icon=iconFor(task.task_type);return <div className="panel task-card"><div className="task-card-top"><div className="type-icon"><Icon size={18}/></div><span className={`priority ${task.priority}`}>{task.priority} priority</span></div><h3>{task.title}</h3><p>{task.description}</p>{task.resource_url&&<a className="resource" href={task.resource_url} target="_blank" rel="noreferrer">Open resource <ArrowUpRight size={14}/></a>}<div className="task-foot"><span>{assignments.length} assigned</span><span>{task.due_date?`Due ${new Date(task.due_date).toLocaleDateString()}`:"No deadline"}</span></div></div>}
-function InternTask({a,setStatus}:any){const t=a.task as Task;const Icon=iconFor(t.task_type);return <div className="panel task-card"><div className="task-card-top"><div className="type-icon"><Icon size={18}/></div><Status status={a.status}/></div><h3>{t.title}</h3><p>{t.description}</p>{t.resource_url&&<a className="resource" href={t.resource_url} target="_blank" rel="noreferrer">{t.task_type==="youtube"?"Watch video":t.task_type==="website"?"Read website":"Open resource"} <ArrowUpRight size={14}/></a>}<div className="task-foot"><span className={`priority ${t.priority}`}>{t.priority} priority</span><span>{t.due_date?`Due ${new Date(t.due_date).toLocaleDateString()}`:"No deadline"}</span></div>{a.status==="assigned"&&<button className="btn secondary small" onClick={()=>setStatus(a.id,"in_progress")}>Start task</button>}{a.status==="in_progress"&&<Upload assignment={a}/>}</div>}
-function Upload({assignment}:any){const [file,setFile]=useState<File|null>(null),[note,setNote]=useState(""),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");async function send(){if(!file||!file.name.toLowerCase().endsWith(".zip")){setMsg("Select a ZIP file.");return;}if(file.size>50*1024*1024){setMsg("Maximum ZIP size is 50 MB.");return;}setBusy(true);const {data}=await supabase.auth.getUser();if(!data.user){setMsg("Session expired.");setBusy(false);return;}const path=`${data.user.id}/${assignment.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;const {error:u}=await supabase.storage.from("intern-submissions").upload(path,file,{contentType:"application/zip",upsert:false});if(u){setMsg(u.message);setBusy(false);return;}const {error}=await supabase.from("submissions").insert({assignment_id:assignment.id,intern_id:data.user.id,storage_path:path,file_name:file.name,file_size:file.size,note});if(error){await supabase.storage.from("intern-submissions").remove([path]);setMsg(error.message);}else{await supabase.from("task_assignments").update({status:"submitted"}).eq("id",assignment.id);setMsg("ZIP submitted for review.");setFile(null);setNote("");}setBusy(false);}return <div className="upload"><label className="file-pick"><FileArchive size={16}/>{file?file.name:"Choose ZIP file"}<input type="file" accept=".zip,application/zip" onChange={e=>setFile(e.target.files?.[0]||null)}/></label><textarea rows={2} placeholder="Note for the admin (optional)" value={note} onChange={e=>setNote(e.target.value)}/><button className="btn primary small" disabled={!file||busy} onClick={send}>{busy?"Uploading…":"Submit work"} <ArrowUpRight size={14}/></button>{msg&&<small>{msg}</small>}<small className="muted">ZIP only · Maximum 50 MB</small></div>}
-function Interns({interns,assignments,invite}:any){return <><Heading eyebrow="PEOPLE" title="Interns" subtitle="The people learning and building with Vivakti." action={<button className="btn primary" onClick={invite}><Plus size={17}/> Invite intern</button>}/><div className="panel table-panel"><div className="panel-head"><div><h2>Intern directory</h2><p>{interns.length} people in your programme</p></div></div>{interns.length?<div className="table-scroll"><table><thead><tr><th>INTERN</th><th>EMAIL</th><th>ASSIGNMENTS</th><th>JOINED</th></tr></thead><tbody>{interns.map((i:Profile)=><tr key={i.id}><td><div className="person"><div className="avatar">{(i.full_name||i.email)[0].toUpperCase()}</div><b>{i.full_name||"Intern"}</b></div></td><td>{i.email}</td><td>{assignments.filter((a:Assignment)=>a.intern_id===i.id).length}</td><td>{new Date(i.created_at).toLocaleDateString()}</td></tr>)}</tbody></table></div>:<Empty icon={Users} title="No interns yet" text="Invite your first intern to get started."/>}</div></>}
-function Reviews({assignments,download,review}:any){const [notes,setNotes]=useState<Record<string,string>>({});const rows=assignments.filter((a:Assignment)=>["submitted","under_review"].includes(a.status));return <><Heading eyebrow="REVIEW QUEUE" title="Submissions" subtitle="Review deliverables, leave feedback and approve completed work."/><div className="review-list">{rows.length?rows.map((a:Assignment)=>{const s=(a.submissions||[]).slice(-1)[0];return <div className="panel review-card" key={a.id}><div className="review-head"><div><div className="eyebrow">{a.intern?.full_name||"Intern"} · {a.task?.title||"Task"}</div><h3>{s?.file_name||"Submission"}</h3><small>{s?`${(s.file_size/1048576).toFixed(2)} MB · ${new Date(s.created_at).toLocaleString()}`:"No file attached"}</small></div><Status status={a.status}/></div>{s?.note&&<p className="quote">“{s.note}”</p>}<button className="btn secondary small" disabled={!s} onClick={()=>s&&download(s.storage_path)}><ArrowDownToLine size={15}/> Download ZIP</button><textarea rows={2} value={notes[a.id]||""} onChange={e=>setNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Feedback for the intern…"/><div className="review-actions"><button className="btn secondary small" onClick={()=>review(a.id,"revision_requested",notes[a.id]||"Please revise and resubmit.")}>Request revision</button><button className="btn primary small" onClick={()=>review(a.id,"approved",notes[a.id]||"Approved. Good work.")}><Check size={15}/> Approve</button></div></div>;}):<div className="panel"><Empty icon={CheckCircle2} title="All caught up" text="New submissions will appear here for review."/></div>}</div></>}
-function Modal({title,subtitle,close,children}:any){return <div className="backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close();}}><div className="modal"><div className="modal-head"><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon" onClick={close}><X/></button></div>{children}</div></div>}
-function TaskModal({interns,close,done}:any){const [title,setTitle]=useState(""),[description,setDescription]=useState(""),[type,setType]=useState("project"),[url,setUrl]=useState(""),[priority,setPriority]=useState("medium"),[due,setDue]=useState(""),[selected,setSelected]=useState<string[]>([]),[error,setError]=useState(""),[busy,setBusy]=useState(false);async function create(e:FormEvent){e.preventDefault();setBusy(true);setError("");if(!selected.length){setError("Select at least one intern.");setBusy(false);return;}const {data:u}=await supabase.auth.getUser();const {data:t,error:te}=await supabase.from("tasks").insert({title,description,task_type:type,resource_url:url||null,priority,due_date:due||null,created_by:u.user?.id}).select().single();if(te){setError(te.message);setBusy(false);return;}const {error:ae}=await supabase.from("task_assignments").insert(selected.map(intern_id=>({task_id:t.id,intern_id})));if(ae)setError(ae.message);else done();setBusy(false);}return <Modal title="Create a task" subtitle="Write a clear brief and assign it to your interns." close={close}><form className="form" onSubmit={create}><label>Task title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g. Research competitor landscape" required/></label><label>Instructions<textarea rows={4} value={description} onChange={e=>setDescription(e.target.value)} placeholder="What needs to be done? Include expected output and context." required/></label><div className="two"><label>Task type<select value={type} onChange={e=>setType(e.target.value)}><option value="project">Project</option><option value="website">Website reading</option><option value="youtube">YouTube video</option><option value="general">General task</option></select></label><label>Priority<select value={priority} onChange={e=>setPriority(e.target.value)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label></div>{["website","youtube"].includes(type)&&<label>Resource URL<input type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…" required/></label>}{type==="project"&&<label>Reference URL <span className="muted">(optional)</span><input type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…"/></label>}<label>Due date<input type="date" value={due} onChange={e=>setDue(e.target.value)}/></label><div className="assign-head"><b>Assign to</b><button type="button" className="text-btn" onClick={()=>setSelected(selected.length===interns.length?[]:interns.map((i:Profile)=>i.id))}>{selected.length===interns.length?"Clear all":"Select all"}</button></div><div className="intern-picker">{interns.map((i:Profile)=><label className="check-row" key={i.id}><input type="checkbox" checked={selected.includes(i.id)} onChange={e=>setSelected(v=>e.target.checked?[...v,i.id]:v.filter(x=>x!==i.id))}/><span>{i.full_name||i.email}<small>{i.email}</small></span></label>)}</div>{error&&<div className="error"><AlertCircle size={15}/>{error}</div>}<div className="modal-actions"><button type="button" className="btn secondary" onClick={close}>Cancel</button><button className="btn primary" disabled={busy}>{busy?"Creating…":"Create and assign"} <ArrowUpRight size={15}/></button></div></form></Modal>}
-function InternModal({close,done}:any){const [name,setName]=useState(""),[email,setEmail]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);async function invite(e:FormEvent){e.preventDefault();setBusy(true);setError("");const {data:{session}}=await supabase.auth.getSession();const {data,error:fn}=await supabase.functions.invoke("create-intern",{body:{email,full_name:name},headers:{Authorization:`Bearer ${session?.access_token}`}});if(fn||data?.error)setError(data?.error||fn?.message||"Invitation failed.");else done();setBusy(false);}return <Modal title="Invite an intern" subtitle="They'll receive an email to set up their account." close={close}><form className="form" onSubmit={invite}><label>Full name<input value={name} onChange={e=>setName(e.target.value)} required placeholder="Intern's name"/></label><label>Email address<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="intern@example.com"/></label><div className="invite-note"><ShieldCheck size={17}/> Invited accounts receive the intern role. Admin access cannot be selected here.</div>{error&&<div className="error"><AlertCircle size={15}/>{error}</div>}<div className="modal-actions"><button type="button" className="btn secondary" onClick={close}>Cancel</button><button className="btn primary" disabled={busy}>{busy?"Sending…":"Send invitation"} <ArrowUpRight size={15}/></button></div></form></Modal>}
+
+function Workspace({ me, api, signOut, demo, switchDemo }: { me: Profile; api: Api; signOut: () => void; demo: boolean; switchDemo: (r: DemoRole) => void }) {
+  const isAdmin = me.role === "admin";
+  const admin = me.role !== "intern"; // staff view: admins and members
+  const [data, setData] = useState<Data>(EMPTY), [loaded, setLoaded] = useState(false), [loadError, setLoadError] = useState("");
+  const [tab, setTabState] = useState<Tab>(() => { const v = new URLSearchParams(location.search).get("view") as Tab; return TABS.includes(v) ? v : "overview"; });
+  const [modal, setModal] = useState<"task" | "intern" | null>(null), [editing, setEditing] = useState<Task | null>(null), [internView, setInternView] = useState<Profile | null>(null), [palette, setPalette] = useState(false), [ticketId, setTicketId] = useState<string | null>(null), [ticketModal, setTicketModal] = useState<{ ticket?: Ticket } | null>(null), [mobile, setMobile] = useState(false);
+  const [detail, setDetail] = useState<{ task: string; assignment?: string } | null>(null);
+  const [dark, setDark] = useState(() => { try { const v = localStorage.getItem("vivakti-theme"); return v ? v === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; } catch { return false; } });
+  useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; try { localStorage.setItem("vivakti-theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(p => !p); } };
+    document.addEventListener("keydown", k); return () => document.removeEventListener("keydown", k);
+  }, []);
+  const [toasts, setToasts] = useState<ToastMsg[]>([]);
+
+  const setTab = (t: Tab) => { setTabState(t); setMobile(false); window.scrollTo({ top: 0 }); history.replaceState(null, "", t === "overview" ? location.pathname : `?view=${t}`); };
+  const toast = useCallback((text: string, kind: "ok" | "err" = "ok") => {
+    const id = Date.now() + Math.random(); setToasts(t => [...t.slice(-3), { id, text, kind }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), kind === "err" ? 7000 : 3500);
+  }, []);
+
+  const reload = useCallback(async (quiet = false) => {
+    try { setData(await api.load()); setLoadError(""); } catch (e: any) { if (!quiet) setLoadError(e.message || "Couldn't load your workspace."); }
+    setLoaded(true);
+  }, [api]);
+  useEffect(() => { setLoaded(false); reload(); }, [reload]);
+  useEffect(() => { // refresh when the tab regains focus, so admin and intern stay in sync
+    const f = () => { if (document.visibilityState === "visible") reload(true); };
+    document.addEventListener("visibilitychange", f); return () => document.removeEventListener("visibilitychange", f);
+  }, [reload]);
+
+  const act = useCallback(async (fn: () => Promise<void>, ok: string) => {
+    try { await fn(); toast(ok); await reload(true); return true; }
+    catch (e: any) { toast(e.message || "Something went wrong.", "err"); return false; }
+  }, [reload, toast]);
+
+  const open = (a: Assignment) => setDetail({ task: a.task_id, assignment: a.id });
+  const openTask = (t: Task) => setDetail({ task: t.id });
+  const openTicket = (t: Ticket) => setTicketId(t.id);
+  const ticket = data.tickets.find(t => t.id === ticketId) || null;
+  const pendingReview = data.assignments.filter(a => REVIEW.includes(a.status)).length;
+  const openCount = data.assignments.filter(a => OPEN.includes(a.status)).length;
+
+  const nav: { id: Tab; label: string; icon: any; badge?: number }[] = [
+    { id: "overview", label: "Overview", icon: LayoutDashboard },
+    { id: "tasks", label: "Tasks", icon: FolderKanban, badge: admin ? 0 : openCount },
+    { id: "tickets", label: "Tickets", icon: Bug, badge: data.tickets.filter(t => t.status === "open" || t.status === "in_progress").length },
+    { id: "calendar", label: "Calendar", icon: CalendarDays },
+    ...(admin ? [{ id: "interns" as Tab, label: isAdmin ? "People" : "Interns", icon: Users }, { id: "submissions" as Tab, label: "Submissions", icon: FileArchive, badge: pendingReview }] : []),
+  ];
+  const current = admin || ["overview", "tasks", "tickets", "calendar"].includes(tab) ? tab : "overview";
+
+  return <div className="shell">
+    <a className="skip" href="#main">Skip to content</a>
+    <aside className={`sidebar ${mobile ? "open" : ""}`}>
+      <div className="side-top"><Brand /><button className="icon mobile-close" onClick={() => setMobile(false)} aria-label="Close menu"><X /></button></div>
+      <div className="nav-label">WORKSPACE</div>
+      <nav aria-label="Main">{nav.map(n => <button key={n.id} className={`nav-item ${current === n.id ? "active" : ""}`} aria-current={current === n.id ? "page" : undefined} onClick={() => setTab(n.id)}>
+        <n.icon size={18} />{n.label}{!!n.badge && <span className="badge">{n.badge}</span>}</button>)}</nav>
+      <div className="sidebar-bottom">
+        <div className="privacy"><ShieldCheck size={17} /><div><b>Private workspace</b><span>Your work stays within Vivakti.</span></div></div>
+        <div className="user"><Avatar name={me.full_name || me.email} /><div className="user-copy"><b>{me.full_name || me.email}</b><span>{ROLE_LABEL[me.role]}</span></div>
+          <button className="icon" onClick={signOut} title="Sign out" aria-label="Sign out"><LogOut size={17} /></button></div>
+      </div>
+    </aside>
+    {mobile && <div className="scrim" onClick={() => setMobile(false)} />}
+    <main className="main" id="main">
+      {demo && <div className="demo-bar"><Sparkles size={14} /><span>Demo mode · changes stay in this browser</span>
+        {(["admin", "member", "intern"] as const).filter(r => r !== me.role).map(r => <button key={r} onClick={() => switchDemo(r)}>Switch to {r} view</button>)}
+        <button onClick={() => { resetDemo(); reload(); toast("Demo data reset."); }}>Reset data</button></div>}
+      <header className="topbar">
+        <button className="icon mobile-menu" onClick={() => setMobile(true)} aria-label="Open menu"><Menu /></button>
+        <div className="crumb">Vivakti <span>/</span> <b>{nav.find(n => n.id === current)?.label}</b></div>
+        <div className="top-right"><button className="kbd-btn" onClick={() => setPalette(true)} aria-label="Quick search"><Search size={14} />Search<kbd>Ctrl K</kbd></button>
+          <button className="icon" onClick={() => setDark(d => !d)} title={dark ? "Light mode" : "Dark mode"} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button>
+          <Bell me={me} admin={admin} list={data.assignments} tickets={data.tickets} open={open} openTicket={openTicket} />
+          <button className="icon" onClick={() => reload().then(() => toast("Up to date."))} title="Refresh" aria-label="Refresh"><RefreshCw size={16} /></button>
+          <span className="role">{me.role.toUpperCase()}</span><Avatar name={me.full_name || me.email} size={30} /></div>
+      </header>
+      {!loaded ? <Skeleton /> : loadError ? <div className="page"><div className="panel err-panel"><AlertCircle /><div><b>Couldn't load your workspace</b><p>{loadError}</p></div><button className="btn secondary" onClick={() => { setLoaded(false); reload(); }}>Try again</button></div></div>
+        : <div className="page" key={current}>
+          {current === "overview" && <Overview me={me} admin={admin} data={data} go={setTab} newTask={() => setModal("task")} open={open} openTicket={openTicket} />}
+          {current === "tickets" && <Tickets isAdmin={isAdmin} data={data} open={openTicket} raise={() => setTicketModal({})} />}
+          {current === "tasks" && <Tasks admin={admin} data={data} newTask={() => setModal("task")} open={open} openTask={openTask} />}
+          {current === "calendar" && <Calendar admin={admin} data={data} open={open} openTask={openTask} />}
+          {current === "interns" && admin && <Interns data={data} invite={() => setModal("intern")} view={setInternView} isAdmin={isAdmin} />}
+          {current === "submissions" && admin && <Reviews data={data} api={api} act={act} />}
+        </div>}
+    </main>
+    {detail && <Detail admin={admin} data={data} target={detail} api={api} act={act} close={() => setDetail(null)} goReview={() => setTab("submissions")} edit={setEditing} meId={me.id} />}
+    {internView && <InternDetail intern={internView} data={data} close={() => setInternView(null)} open={open} />}
+    {palette && <Palette admin={admin} data={data} go={setTab} openTicket={openTicket} openTask={t => admin ? openTask(t) : open(data.assignments.find(a => a.task_id === t.id)!)} close={() => setPalette(false)} />}
+    {modal === "task" && <TaskModal interns={data.interns} api={api} close={() => setModal(null)} done={async () => { setModal(null); toast("Task created and assigned."); await reload(true); }} />}
+    {editing && <TaskModal task={editing} assignedIds={data.assignments.filter(a => a.task_id === editing.id).map(a => a.intern_id)} interns={data.interns} api={api} close={() => setEditing(null)} done={async () => { setEditing(null); toast("Task updated."); await reload(true); }} />}
+    {ticket && <TicketDetail ticket={ticket} isAdmin={isAdmin} me={me} api={api} act={act} close={() => setTicketId(null)} edit={t => setTicketModal({ ticket: t })} />}
+    {ticketModal && <TicketModal ticket={ticketModal.ticket} people={[...data.members, ...data.interns]} apps={[...new Set(data.tickets.map(t => t.application))]} api={api} close={() => setTicketModal(null)}
+      done={async () => { const edited = !!ticketModal.ticket; setTicketModal(null); toast(edited ? "Ticket updated." : "Ticket raised."); await reload(true); }} />}
+    {modal === "intern" && <InternModal api={api} close={() => setModal(null)} done={async () => { setModal(null); toast("Invitation sent."); await reload(true); }} />}
+    <Toasts items={toasts} dismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
+  </div>;
+}

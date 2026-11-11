@@ -24,7 +24,12 @@ Deno.serve(async (req) => {
   const email = String(body.email || "").trim().toLowerCase();
   const full_name = String(body.full_name || "").trim();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !full_name) return new Response(JSON.stringify({error:"Valid email and full name are required"}), {status:400,headers:{...cors,"Content-Type":"application/json"}});
-  const { error } = await admin.auth.admin.inviteUserByEmail(email, { data: { full_name } });
+  const role = body.role === "member" ? "member" : "intern"; // admins can only be created manually in SQL
+  const { data: invited, error } = await admin.auth.admin.inviteUserByEmail(email, { data: { full_name } });
   if (error) return new Response(JSON.stringify({error:error.message}), {status:400,headers:{...cors,"Content-Type":"application/json"}});
+  if (role === "member" && invited?.user?.id) {
+    const { error: roleError } = await admin.from("profiles").update({ role: "member" }).eq("id", invited.user.id);
+    if (roleError) return new Response(JSON.stringify({error:"Invited, but could not set the member role: " + roleError.message}), {status:500,headers:{...cors,"Content-Type":"application/json"}});
+  }
   return new Response(JSON.stringify({ok:true}), {status:200,headers:{...cors,"Content-Type":"application/json"}});
 });
